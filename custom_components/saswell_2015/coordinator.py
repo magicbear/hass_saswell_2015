@@ -87,6 +87,115 @@ class _GatewayPluginBase(BasePlugin[BaseContext]):
             await self.coordinator._handle_publish(client_id, message)
 
 
+def _patch_amqtt() -> None:
+    """Patch amqtt to accept MQTT 3.1 connections (MQIsdp / protocol level 3).
+
+    Saswell 2015-era thermostats speak MQTT 3.1, sending proto_name='MQIsdp'
+    and proto_level=3 in their CONNECT packet. By default, amqtt strictly
+    requires proto_name == 'MQTT' and proto_level == 4 (MQTT 3.1.1), which causes
+    real devices to be rejected on connection.
+    """
+    import amqtt.broker as b
+    import amqtt.mqtt.protocol.broker_handler as bh
+    from amqtt.errors import MQTTError
+    from amqtt.events import MQTTEvents
+    from amqtt.mqtt.connack import (
+        BAD_USERNAME_PASSWORD,
+        IDENTIFIER_REJECTED,
+        UNACCEPTABLE_PROTOCOL_VERSION,
+        ConnackPacket,
+    )
+    from amqtt.mqtt.connect import ConnectPacket
+    from amqtt.session import Session
+    from amqtt.utils import format_client_message
+
+    if getattr(bh.BrokerProtocolHandler, "_saswell_patched", False):
+        return
+
+    @classmethod
+    async def _patched_init_from_connect(
+        cls: type[bh.BrokerProtocolHandler],
+        reader: Any,
+        writer: Any,
+        plugins_manager: Any,
+        loop: Any = None,
+    ) -> tuple[bh.BrokerProtocolHandler, Session]:
+        connect = await ConnectPacket.from_stream(reader)
+        await plugins_manager.fire_event(MQTTEvents.PACKET_RECEIVED, packet=connect)
+
+        if connect.variable_header is None:
+            raise MQTTError("CONNECT packet: variable header not initialized.")
+        if connect.payload is None:
+            raise MQTTError("CONNECT packet: payload not initialized.")
+        if connect.payload.client_id is None:
+            raise MQTTError("[MQTT-3.1.3-3] : Client identifier must be present")
+        if connect.variable_header.will_flag and (
+            connect.payload.will_topic is None or connect.payload.will_message is None
+        ):
+            raise MQTTError("Will flag set, but will topic/message not present in payload")
+        if connect.variable_header.reserved_flag:
+            raise MQTTError("[MQTT-3.1.2-3] CONNECT reserved flag must be set to 0")
+
+        # Allow both MQTT 3.1.1 ("MQTT") and MQTT 3.1 ("MQIsdp")
+        if connect.proto_name not in ("MQTT", "MQIsdp"):
+            raise MQTTError(f'[MQTT-3.1.2-1] Incorrect protocol name: "{connect.proto_name}"')
+
+        remote_info = writer.get_peer_info()
+        if remote_info is not None:
+            remote_address, remote_port = remote_info
+            connack = None
+            error_msg = None
+            # Allow proto_level 3 (MQTT 3.1) and 4 (MQTT 3.1.1)
+            if connect.proto_level not in (3, 4):
+                error_msg = (
+                    f"Invalid protocol from {format_client_message(address=remote_address, port=remote_port)}:"
+                    f" {connect.proto_level}"
+                )
+                connack = ConnackPacket.build(0, UNACCEPTABLE_PROTOCOL_VERSION)
+            elif not connect.username_flag and connect.password_flag:
+                connack = ConnackPacket.build(0, BAD_USERNAME_PASSWORD)
+            elif connect.username_flag and connect.username is None:
+                error_msg = f"Invalid username from {format_client_message(address=remote_address, port=remote_port)}"
+                connack = ConnackPacket.build(0, BAD_USERNAME_PASSWORD)
+            elif connect.password_flag and connect.password is None:
+                error_msg = f"Invalid password from {format_client_message(address=remote_address, port=remote_port)}"
+                connack = ConnackPacket.build(0, BAD_USERNAME_PASSWORD)
+            elif connect.clean_session_flag is False and connect.payload.client_id_is_random:
+                error_msg = (
+                    f"[MQTT-3.1.3-8] [MQTT-3.1.3-9] {format_client_message(address=remote_address, port=remote_port)}:"
+                    " No client Id provided (cleansession=0)"
+                )
+                connack = ConnackPacket.build(0, IDENTIFIER_REJECTED)
+
+            if connack is not None:
+                await plugins_manager.fire_event(MQTTEvents.PACKET_SENT, packet=connack)
+                await connack.to_stream(writer)
+                await writer.close()
+                raise MQTTError(error_msg) from None
+
+        incoming_session = Session()
+        incoming_session.client_id = connect.client_id
+        incoming_session.clean_session = connect.clean_session_flag
+        incoming_session.will_flag = connect.will_flag
+        incoming_session.will_retain = connect.will_retain_flag
+        incoming_session.will_qos = connect.will_qos
+        incoming_session.will_topic = connect.will_topic
+        incoming_session.will_message = connect.will_message
+        incoming_session.username = connect.username
+        incoming_session.password = connect.password
+        incoming_session.remote_address = remote_address
+        incoming_session.remote_port = remote_port
+        incoming_session.ssl_object = writer.get_ssl_info()
+        incoming_session.keep_alive = max(connect.keep_alive, 0)
+
+        handler = cls(plugins_manager, loop=loop)
+        return handler, incoming_session
+
+    bh.BrokerProtocolHandler._saswell_patched = True  # type: ignore[attr-defined]
+    bh.BrokerProtocolHandler.init_from_connect = _patched_init_from_connect
+    b.BrokerProtocolHandler.init_from_connect = _patched_init_from_connect
+
+
 class SaswellCoordinator:
     def __init__(self, hass: HomeAssistant, host: str, port: int):
         self.hass = hass
@@ -100,6 +209,7 @@ class SaswellCoordinator:
         self._plugin_cls: type | None = None
 
     async def async_start(self) -> None:
+        _patch_amqtt()
         plugin_cls = type(f"_SaswellPlugin_{id(self)}", (_GatewayPluginBase,), {"coordinator": self})
         setattr(sys.modules[__name__], plugin_cls.__name__, plugin_cls)
         self._plugin_cls = plugin_cls
