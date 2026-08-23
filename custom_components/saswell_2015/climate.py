@@ -116,11 +116,18 @@ class SaswellClimate(ClimateEntity):
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
-        await self._coordinator.async_send_command(self._devid, "SetTemperature", str(temperature))
+        val_str = str(int(temperature)) if temperature == int(temperature) else str(temperature)
+        state = self._state
+        state.target_temperature = float(temperature)
+        self.async_write_ha_state()
+        await self._coordinator.async_send_command(self._devid, "SetTemperature", val_str)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        state = self._state
+        state.power = hvac_mode == HVACMode.HEAT
+        self.async_write_ha_state()
         await self._coordinator.async_send_command(
-            self._devid, "SetPower", "1" if hvac_mode == HVACMode.HEAT else "0"
+            self._devid, "SetPower", "1" if state.power else "0"
         )
 
     async def async_turn_on(self) -> None:
@@ -130,6 +137,9 @@ class SaswellClimate(ClimateEntity):
         await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
+        state = self._state
+        state.leave_mode = preset_mode == PRESET_AWAY
+        self.async_write_ha_state()
         await self._coordinator.async_send_command(
-            self._devid, "SetLeaveMode", "1" if preset_mode == PRESET_AWAY else "0"
+            self._devid, "SetLeaveMode", "1" if state.leave_mode else "0"
         )

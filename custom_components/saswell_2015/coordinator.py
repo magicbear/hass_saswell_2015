@@ -276,6 +276,15 @@ class SaswellCoordinator:
         if self.broker is None:
             return
         data = (payload or "").encode("utf-8")
+        _LOGGER.debug("Sending Saswell publish to devid=%s topic=%s payload=%s", devid, topic, payload)
+        handler = self.broker._sessions.get(devid, (None, None))[1]
+        if handler is not None:
+            try:
+                await handler.mqtt_publish(topic, data, qos=1, retain=False)
+                _LOGGER.debug("Directly published to %s handler successfully", devid)
+                return
+            except Exception as err:
+                _LOGGER.warning("Failed direct publish to %s: %s, falling back to broadcast", devid, err)
         await self.broker.plugins_manager.context.broadcast_message(topic, data, qos=1)
 
     # ---- inbound ----
