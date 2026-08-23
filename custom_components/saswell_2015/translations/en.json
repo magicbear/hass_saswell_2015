@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Saswell 2015 local broker",
+        "description": "Starts an in-process broker that Saswell 2015 thermostats connect to (real firmware hardcodes 113.106.11.58:1883 as its cloud endpoint -- route/NAT that address to this host:port on your network; the port itself doesn't have to be 1883).",
+        "data": {
+          "host": "Listen address",
+          "port": "Listen port"
+        }
+      }
+    },
+    "error": {
+      "cannot_bind": "Could not bind that address/port -- is something else already listening there?"
+    },
+    "abort": {
+      "already_configured": "A Saswell broker is already configured for that address/port"
+    }
+  }
+}
