@@ -152,8 +152,6 @@ def _patch_amqtt() -> None:
                     f" {connect.proto_level}"
                 )
                 connack = ConnackPacket.build(0, UNACCEPTABLE_PROTOCOL_VERSION)
-            elif not connect.username_flag and connect.password_flag:
-                connack = ConnackPacket.build(0, BAD_USERNAME_PASSWORD)
             elif connect.username_flag and connect.username is None:
                 error_msg = f"Invalid username from {format_client_message(address=remote_address, port=remote_port)}"
                 connack = ConnackPacket.build(0, BAD_USERNAME_PASSWORD)
