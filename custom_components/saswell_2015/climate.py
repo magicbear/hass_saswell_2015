@@ -8,6 +8,7 @@ from homeassistant.components.climate import (
     PRESET_NONE,
     ClimateEntity,
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -63,6 +64,9 @@ class SaswellClimate(ClimateEntity):
     _attr_supported_features = _SUPPORT_FLAGS
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_precision = PRECISION_TENTHS
+    _attr_target_temperature_step = 1.0
+    _attr_min_temp = 5.0
+    _attr_max_temp = 35.0
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
     _attr_preset_modes = [PRESET_NONE, PRESET_AWAY]
 
@@ -88,6 +92,16 @@ class SaswellClimate(ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode:
         return HVACMode.HEAT if self._state.power else HVACMode.OFF
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        if not self._state.power:
+            return HVACAction.OFF
+        if self.current_temperature is not None and self.target_temperature is not None:
+            if self.current_temperature < self.target_temperature:
+                return HVACAction.HEATING
+            return HVACAction.IDLE
+        return HVACAction.HEATING
 
     @property
     def preset_mode(self) -> str:
